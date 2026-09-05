@@ -48,6 +48,10 @@ object SessionStore {
 
     fun delete(ctx: Context, id: Long): Boolean = file(ctx, id).delete()
 
+    /** The recorded audio for a session, or null if it has none. */
+    fun audioFile(ctx: Context, id: Long): File? =
+        File(dir(ctx), "$id.wav").takeIf { it.exists() }
+
     private fun parse(f: File): PitchSession? = try {
         val o = JSONObject(f.readText())
         val tArr = o.getJSONArray("t")

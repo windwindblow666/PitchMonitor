@@ -1,49 +1,105 @@
 package com.pitchmonitor.ui.screens
 
+import android.media.MediaPlayer
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.withFrameNanos
+import com.pitchmonitor.data.SessionStore
 import com.pitchmonitor.model.PitchSession
 import com.pitchmonitor.ui.components.CurveCanvas
 import com.pitchmonitor.util.Fmt
 import com.pitchmonitor.util.NoteUtil
+import kotlin.math.abs
 import kotlin.math.min
 
 /**
  * Playback of a recorded session: full curve with a draggable playhead.
  * Play animates the playhead in real time; dragging scrubs to any position.
  * The pitch under the playhead is shown in a readout card.
+ * If the session has a recorded WAV, it plays in sync with the playhead.
  */
 @Composable
 fun PlaybackScreen(
     session: PitchSession,
     onBack: () -> Unit,
 ) {
+    val context = LocalContext.current
     var playheadMs by remember(session.id) { mutableStateOf(0L) }
-    var isPlaying by remember { mutableStateOf(false) }
+    var isPlaying by remember(session.id) { mutableStateOf(false) }
 
-    // advance playhead in real time while playing
+    // audio player for sessions recorded with sound
+    val player = remember(session.id) {
+        SessionStore.audioFile(context, session.id)?.let { f ->
+            try {
+                MediaPlayer().apply {
+                    setDataSource(f.absolutePath)
+                    prepare()
+                    isLooping = false
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+    DisposableEffect(session.id) {
+        onDispose { player?.release() }
+    }
+    LaunchedEffect(session.id) {
+        player?.setOnCompletionListener {
+            isPlaying = false
+            playheadMs = session.durationMs
+        }
+    }
+
+    // advance playhead; resync to the audio clock when audio is playing
     LaunchedEffect(isPlaying, session.id) {
         if (!isPlaying) return@LaunchedEffect
         var last = withFrameNanos { it }
         while (isPlaying && playheadMs < session.durationMs) {
             withFrameNanos { now ->
-                playheadMs = min(session.durationMs, playheadMs + (now - last) / 1_000_000L)
+                if (player != null && player.isPlaying) {
+                    val pos = player.currentPosition.toLong()
+                    if (abs(pos - playheadMs) > 250) playheadMs = pos.coerceAtMost(session.durationMs)
+                    else playheadMs = min(session.durationMs, playheadMs + (now - last) / 1_000_000L)
+                } else {
+                    playheadMs = min(session.durationMs, playheadMs + (now - last) / 1_000_000L)
+                }
                 last = now
             }
         }
         if (playheadMs >= session.durationMs) isPlaying = false
+    }
+
+    fun seekTo(ms: Long) {
+        playheadMs = ms.coerceIn(0L, session.durationMs)
+        runCatching { player?.seekTo(playheadMs.toInt()) }
+    }
+
+    fun togglePlay() {
+        if (isPlaying) {
+            player?.pause()
+            isPlaying = false
+        } else {
+            if (playheadMs >= session.durationMs) seekTo(0L)
+            player?.let {
+                it.seekTo(playheadMs.toInt())
+                it.start()
+            }
+            isPlaying = true
+        }
     }
 
     // pitch under the playhead
@@ -80,6 +136,14 @@ fun PlaybackScreen(
                             "时长 ${Fmt.duration(session.durationMs)}",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+                        )
+                    }
+                    if (player != null) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.VolumeUp,
+                            contentDescription = "含录音",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(end = 12.dp),
                         )
                     }
                 }
@@ -147,10 +211,7 @@ fun PlaybackScreen(
                     freqs = session.freqs,
                     durationMs = session.durationMs,
                     playheadMs = playheadMs,
-                    onScrubFraction = { fraction ->
-                        playheadMs = (fraction * session.durationMs).toLong()
-                            .coerceIn(0L, session.durationMs)
-                    },
+                    onScrubFraction = { fraction -> seekTo((fraction * session.durationMs).toLong()) },
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(10.dp),
@@ -171,10 +232,7 @@ fun PlaybackScreen(
                     modifier = Modifier.width(52.dp),
                 )
                 FilledIconButton(
-                    onClick = {
-                        if (playheadMs >= session.durationMs) playheadMs = 0L
-                        isPlaying = !isPlaying
-                    },
+                    onClick = { togglePlay() },
                     modifier = Modifier
                         .weight(1f)
                         .height(54.dp),

@@ -16,6 +16,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import java.io.File
 import kotlin.math.abs
 import kotlin.math.sqrt
 
@@ -27,6 +30,7 @@ data class PendingRecording(
     val durationMs: Long,
     val timesMs: List<Long>,
     val freqs: List<Float?>,
+    val audioFile: File?,
 ) {
     fun defaultName(): String = Fmt.defaultSessionName(createdAt, durationMs)
 }
@@ -83,6 +87,7 @@ class PitchViewModel(
     private var tickerJob: Job? = null
     private var recordStartElapsed = 0L
     private var recordCreatedAt = 0L
+    private var wav: WavRecorder? = null
     private val recTimes = ArrayList<Long>()
     private val recFreqs = ArrayList<Float?>()
 
@@ -127,6 +132,7 @@ class PitchViewModel(
             recordStartElapsed = SystemClock.elapsedRealtime()
             recordCreatedAt = System.currentTimeMillis()
             _elapsedMs.value = 0L
+            wav = WavRecorder(audioFile(recordCreatedAt), SAMPLE_RATE)
             tickerJob = viewModelScope.launch {
                 while (true) {
                     _elapsedMs.value = SystemClock.elapsedRealtime() - recordStartElapsed
@@ -136,6 +142,7 @@ class PitchViewModel(
         }
         captureJob = viewModelScope.launch(Dispatchers.Default) {
             capture.frames().collect { frame ->
+                wav?.write(frame)
                 processFrame(frame)
             }
         }
@@ -144,19 +151,34 @@ class PitchViewModel(
     fun stop() {
         if (!_isRunning.value) return
         _isRunning.value = false
-        captureJob?.cancel()
+        // wait for the collector to exit its current blocking read before
+        // touching the WAV file (read returns within one frame, ~47 ms)
+        captureJob?.let { job -> runBlocking { runCatching { withTimeout(500) { job.join() } } } }
         captureJob = null
         tickerJob?.cancel()
         tickerJob = null
-        if (_mode.value == MonitorMode.RECORD && recTimes.isNotEmpty()) {
-            _pendingRecording.value = PendingRecording(
-                createdAt = recordCreatedAt,
-                durationMs = recTimes.last(),
-                timesMs = recTimes.toList(),
-                freqs = recFreqs.toList(),
-            )
+        if (_mode.value == MonitorMode.RECORD) {
+            val recorder = wav
+            wav = null
+            if (recTimes.isNotEmpty()) {
+                recorder?.finish()
+                _pendingRecording.value = PendingRecording(
+                    createdAt = recordCreatedAt,
+                    durationMs = recTimes.last(),
+                    timesMs = recTimes.toList(),
+                    freqs = recFreqs.toList(),
+                    audioFile = recorder?.let { File(audioFile(recordCreatedAt).absolutePath).takeIf { f -> f.exists() } },
+                )
+            } else {
+                recorder?.abort()
+            }
         }
     }
+
+    private fun audioFile(id: Long): File =
+        File(File(getApplication<Application>().filesDir, "pitch_sessions").apply { mkdirs() }, "$id.wav")
+
+    fun audioFileFor(id: Long): File? = audioFile(id).takeIf { it.exists() }
 
     fun savePending(name: String?) {
         val p = _pendingRecording.value ?: return
@@ -177,6 +199,7 @@ class PitchViewModel(
     }
 
     fun discardPending() {
+        _pendingRecording.value?.audioFile?.delete()
         _pendingRecording.value = null
         recTimes.clear()
         recFreqs.clear()

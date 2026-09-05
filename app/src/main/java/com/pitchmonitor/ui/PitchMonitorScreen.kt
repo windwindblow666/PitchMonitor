@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,6 +42,8 @@ import com.pitchmonitor.util.Fmt
 @Composable
 fun PitchMonitorScreen(
     viewModel: PitchViewModel,
+    themeMode: ThemeMode,
+    onThemeChange: (ThemeMode) -> Unit,
     onOpenSessions: () -> Unit,
     onSavedGoSessions: () -> Unit,
 ) {
@@ -52,6 +55,8 @@ fun PitchMonitorScreen(
     val mode by viewModel.mode.collectAsState()
     val elapsedMs by viewModel.elapsedMs.collectAsState()
     val pending by viewModel.pendingRecording.collectAsState()
+
+    var showThemeDialog by remember { mutableStateOf(false) }
 
     var showNameDialog by remember { mutableStateOf(false) }
     LaunchedEffect(pending) { showNameDialog = pending != null }
@@ -87,6 +92,13 @@ fun PitchMonitorScreen(
                     Icon(
                         Icons.Filled.History,
                         contentDescription = "历史记录",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                IconButton(onClick = { showThemeDialog = true }) {
+                    Icon(
+                        Icons.Filled.Palette,
+                        contentDescription = "主题设置",
                         tint = MaterialTheme.colorScheme.primary,
                     )
                 }
@@ -204,6 +216,38 @@ fun PitchMonitorScreen(
             }
             Spacer(modifier = Modifier.height(10.dp))
         }
+    }
+
+    // ---- theme settings dialog ----
+    if (showThemeDialog) {
+        AlertDialog(
+            onDismissRequest = { showThemeDialog = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("界面主题", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    ThemeMode.entries.forEach { m ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp)
+                                .clickable { onThemeChange(m) },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(
+                                selected = themeMode == m,
+                                onClick = { onThemeChange(m) },
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(m.label, fontSize = 15.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showThemeDialog = false }) { Text("关闭") }
+            },
+        )
     }
 
     // ---- naming dialog after a recording ----
