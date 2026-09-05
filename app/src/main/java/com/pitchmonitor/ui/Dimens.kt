@@ -26,6 +26,10 @@ data class Dimens(
     val octaveFont: Int,
     val clarityFont: Int,
 
+    /** fixed-height blocks so the card never resizes between pitch/no-pitch */
+    val freqBlockHeight: Dp,
+    val noteBlockHeight: Dp,
+
     // cents meter
     val meterCanvasHeight: Dp,
     val meterTextFont: Int,
@@ -63,6 +67,8 @@ private val CompactDimens = Dimens(
     noteFont = 44,
     octaveFont = 22,
     clarityFont = 12,
+    freqBlockHeight = 92.dp,
+    noteBlockHeight = 74.dp,
     meterCanvasHeight = 70.dp,
     meterTextFont = 20,
     graphTitleFont = 13,
@@ -87,6 +93,8 @@ private val ExpandedDimens = Dimens(
     noteFont = 58,
     octaveFont = 28,
     clarityFont = 14,
+    freqBlockHeight = 122.dp,
+    noteBlockHeight = 98.dp,
     meterCanvasHeight = 84.dp,
     meterTextFont = 24,
     graphTitleFont = 15,

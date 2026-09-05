@@ -16,6 +16,9 @@ object SessionStore {
     private fun dir(ctx: Context): File =
         File(ctx.filesDir, "pitch_sessions").apply { mkdirs() }
 
+    /** Public accessor — the importer streams WAVs into the same folder. */
+    fun sessionDir(ctx: Context): File = dir(ctx)
+
     private fun file(ctx: Context, id: Long) = File(dir(ctx), "$id.json")
 
     fun save(ctx: Context, s: PitchSession) {

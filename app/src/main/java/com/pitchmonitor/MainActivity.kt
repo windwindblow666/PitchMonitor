@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -95,6 +96,7 @@ private fun App() {
                         }
                         SessionsScreen(
                             sessions = sessions.value,
+                            importState = viewModel.importState.collectAsState().value,
                             onBack = { screen = Screen.Monitor },
                             onOpen = { id -> screen = Screen.Playback(id) },
                             onDelete = { id ->
@@ -106,6 +108,13 @@ private fun App() {
                                 sessions.value = sessions.value.map {
                                     if (it.id == id) it.copy(name = name) else it
                                 }
+                            },
+                            onImportPicked = viewModel::startImport,
+                            onCancelImport = viewModel::cancelImport,
+                            onImported = { id ->
+                                viewModel.consumeImportDone()
+                                sessions.value = SessionStore.list(context)
+                                screen = Screen.Playback(id)
                             },
                         )
                     }

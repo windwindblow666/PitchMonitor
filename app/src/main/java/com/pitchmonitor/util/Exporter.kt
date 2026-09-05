@@ -17,6 +17,15 @@ object Exporter {
     fun sanitizeFileName(name: String): String =
         ILLEGAL.replace(name, " ").trim().ifEmpty { "recording" }
 
+    /** Display name of a content Uri (for imported files), or null. */
+    fun queryDisplayName(ctx: Context, uri: Uri): String? = try {
+        ctx.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+    } catch (_: Exception) {
+        null
+    }
+
     /**
      * Writes [bytes] into MediaStore Downloads. No storage permission needed
      * (API 29+) for URIs the app inserted itself. Returns the content Uri and

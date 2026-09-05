@@ -1,5 +1,8 @@
 package com.pitchmonitor.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -10,8 +13,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pitchmonitor.audio.ImportState
 import com.pitchmonitor.model.PitchSession
 import com.pitchmonitor.ui.LocalDimens
 import com.pitchmonitor.ui.components.CurveCanvas
@@ -32,19 +38,34 @@ import java.util.Locale
 
 /**
  * List of saved recordings. Tap a card to open playback; pencil renames;
- * trash icon deletes.
+ * trash icon deletes. The upload icon imports an audio file (MP3/WAV/…) and
+ * analyses its pitch into a new session.
  */
 @Composable
 fun SessionsScreen(
     sessions: List<PitchSession>,
+    importState: ImportState,
     onBack: () -> Unit,
     onOpen: (Long) -> Unit,
     onDelete: (Long) -> Unit,
     onRename: (Long, String) -> Unit,
+    onImportPicked: (Uri) -> Unit,
+    onCancelImport: () -> Unit,
+    onImported: (Long) -> Unit,
 ) {
     val d = LocalDimens.current
     var confirmDelete by remember { mutableStateOf<PitchSession?>(null) }
     var renameTarget by remember { mutableStateOf<PitchSession?>(null) }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let(onImportPicked) }
+
+    // when the import finishes, jump straight into the new session's playback
+    LaunchedEffect(importState) {
+        val s = importState
+        if (s is ImportState.Done) onImported(s.sessionId)
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -68,7 +89,15 @@ fun SessionsScreen(
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.weight(1f),
                 )
+                IconButton(onClick = { importLauncher.launch(arrayOf("audio/*")) }) {
+                    Icon(
+                        Icons.Filled.Upload,
+                        contentDescription = "导入音频",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
         },
     ) { padding ->
@@ -158,6 +187,44 @@ fun SessionsScreen(
                 }
             },
         )
+    }
+
+    // ---- import progress / result ----
+    when (val st = importState) {
+        is ImportState.Running -> AlertDialog(
+            onDismissRequest = { },
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("正在解析音频", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(st.fileName, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(12.dp))
+                    LinearProgressIndicator(
+                        progress = { st.progress },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "${(st.progress * 100).toInt()}%",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = onCancelImport) { Text("取消") }
+            },
+        )
+        is ImportState.Failed -> AlertDialog(
+            onDismissRequest = { },
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("导入失败", fontWeight = FontWeight.Bold) },
+            text = { Text(st.message) },
+            confirmButton = {
+                TextButton(onClick = onCancelImport) { Text("确定") }
+            },
+        )
+        else -> {}
     }
 }
 

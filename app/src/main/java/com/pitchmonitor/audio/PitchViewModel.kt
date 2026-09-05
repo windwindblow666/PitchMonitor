@@ -1,12 +1,14 @@
 package com.pitchmonitor.audio
 
 import android.app.Application
+import android.net.Uri
 import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pitchmonitor.data.SessionStore
 import com.pitchmonitor.model.PitchResult
 import com.pitchmonitor.model.PitchSession
+import com.pitchmonitor.util.Exporter
 import com.pitchmonitor.util.Fmt
 import com.pitchmonitor.util.NoteUtil
 import kotlinx.coroutines.Dispatchers
@@ -22,7 +24,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.abs
 import kotlin.math.sqrt
 
 enum class MonitorMode { LIVE, RECORD }
@@ -38,19 +39,25 @@ data class PendingRecording(
     fun defaultName(): String = Fmt.defaultSessionName(createdAt, durationMs)
 }
 
+/** File-import state machine surfaced to the UI. */
+sealed interface ImportState {
+    data object Idle : ImportState
+    data class Running(val fileName: String, val progress: Float) : ImportState
+    data class Done(val sessionId: Long, val name: String) : ImportState
+    data class Failed(val message: String) : ImportState
+}
+
 /**
  * Owns the audio pipeline and exposes observable UI state.
  *
- * Raw per-frame MPM detections are jittery, so results pass through a tracker:
- *  1. Gates — silence (rms) and clarity thresholds reject noise frames.
- *  2. Lock-in — a new pitch must repeat consistently before it is tracked.
- *  3. Continuity — near detections are EMA-smoothed; ×2/×3/÷2/÷3 jumps are
- *     octave errors and get held (persistent flips trigger a re-lock).
- *  4. Re-pitch — a genuinely different pitch must repeat before jumping.
- *  5. Display median — last 3 tracked values, median shown.
+ * Live pipeline: AudioRecord frames → WAV (record mode, inline, gapless) and
+ * → PitchDetector on a side channel → [PitchTracker] (anti-jitter) → UI state.
  *
  * Modes: LIVE monitors without persisting; RECORD additionally stores the
- * (timestamp, frequency) stream and offers it for naming/saving on stop.
+ * (timestamp, frequency) stream and the WAV, offered for naming/saving on stop.
+ *
+ * File import: decodes an audio file (MP3/AAC/WAV/…) off-line with the same
+ * detector + tracker and saves it as a regular session.
  */
 class PitchViewModel(
     app: Application,
@@ -63,19 +70,12 @@ class PitchViewModel(
 
         private const val SILENCE_RMS_THRESHOLD = 0.0025f
         private const val MIN_CLARITY = 0.65f
-
-        private const val LOCK_IN_FRAMES = 3
-        private const val RELOCK_FRAMES = 4
-        private const val OCTAVE_ESCAPE_FRAMES = 10
-        private const val SILENCE_RESET_FRAMES = 15
-        private const val TOLERANCE = 0.07f
-        private const val OCTAVE_TOL = 0.05f
-        private const val EMA_WEIGHT = 0.15f
     }
 
     private val capture = AudioCapture(SAMPLE_RATE, FRAME_SIZE)
     private val detector = PitchDetector(SAMPLE_RATE)
     private val tonePlayer = ReferenceTonePlayer(SAMPLE_RATE)
+    private val tracker = PitchTracker()
 
     // ---------- mode / recording ----------
     private val _mode = MutableStateFlow(MonitorMode.LIVE)
@@ -109,24 +109,19 @@ class PitchViewModel(
 
     private val historyBuffer = ArrayDeque<Float?>()
 
-    // Pitch tracker state (all mutated only on the capture collector thread)
-    private var stableFreq: Float? = null
-    private var candidateFreq: Float? = null
-    private var candidateCount = 0
-    private var octaveRejectCount = 0
-    private var silentRun = 0
-    private val displayWindow = ArrayDeque<Float>(3)
-
     private var captureJob: Job? = null
 
     /**
      * Recording-generation guard. Bumped on every stop(); a collector whose
      * generation is stale no-ops instead of racing the next recording (the
-     * v0.3 crash + audio-corruption source: stop() gave up waiting on a stuck
-     * collector, the next start() spawned a second one, and both wrote the
-     * tracker state and WAV concurrently).
+     * v0.3 crash + audio-corruption source).
      */
     private val gen = AtomicInteger(0)
+
+    // ---------- file import ----------
+    private val _importState = MutableStateFlow<ImportState>(ImportState.Idle)
+    val importState: StateFlow<ImportState> = _importState.asStateFlow()
+    private var importJob: Job? = null
 
     // ---------- mode ----------
     fun setMode(m: MonitorMode) {
@@ -139,6 +134,7 @@ class PitchViewModel(
         if (_isRunning.value) return
         _isRunning.value = true
         val myGen = gen.incrementAndGet()
+        tracker.reset()
         if (_mode.value == MonitorMode.RECORD) {
             recTimes.clear()
             recFreqs.clear()
@@ -250,6 +246,55 @@ class PitchViewModel(
 
     fun loadSession(id: Long): PitchSession? = SessionStore.load(getApplication(), id)
 
+    // ---------- file import ----------
+    fun startImport(uri: Uri) {
+        if (_importState.value is ImportState.Running) return
+        val app = getApplication<Application>()
+        val fileName = Exporter.queryDisplayName(app, uri) ?: "导入音频"
+        val baseName = Exporter.sanitizeFileName(fileName.substringBeforeLast('.')).ifEmpty { "导入音频" }
+        _importState.value = ImportState.Running(fileName = baseName, progress = 0f)
+        val createdAt = System.currentTimeMillis()
+        importJob = viewModelScope.launch(Dispatchers.Default) {
+            try {
+                val result = AudioImporter(
+                    app,
+                    SessionStore.sessionDir(app),
+                    id = createdAt,
+                    sampleRate = SAMPLE_RATE,
+                ).import(uri, baseName) { progress ->
+                    if (_importState.value is ImportState.Running) {
+                        _importState.value = ImportState.Running(baseName, progress)
+                    }
+                }
+                val session = PitchSession(
+                    id = createdAt,
+                    name = baseName,
+                    createdAt = createdAt,
+                    durationMs = result.durationMs,
+                    timesMs = result.timesMs,
+                    freqs = result.freqs,
+                )
+                SessionStore.save(app, session)
+                _importState.value = ImportState.Done(createdAt, baseName)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _importState.value = ImportState.Idle
+                throw e
+            } catch (e: Exception) {
+                _importState.value = ImportState.Failed(e.message ?: "导入失败")
+            }
+        }
+    }
+
+    fun cancelImport() {
+        importJob?.cancel()
+        importJob = null
+        _importState.value = ImportState.Idle
+    }
+
+    fun consumeImportDone() {
+        if (_importState.value is ImportState.Done) _importState.value = ImportState.Idle
+    }
+
     // ---------- reference tone ----------
     fun toggleReferenceTone() {
         if (tonePlayer.isPlaying) {
@@ -277,96 +322,18 @@ class PitchViewModel(
         }
         val rms = sqrt(rmsSum / frame.size)
 
-        if (rms < SILENCE_RMS_THRESHOLD) {
-            onUnusableFrame(rms)
-            return
-        }
-
-        val detection = detector.detect(samples, 0, samples.size)
-        val raw = detection.frequency
-        if (raw == null || detection.clarity < MIN_CLARITY) {
-            onUnusableFrame(rms)
-            return
-        }
-
-        silentRun = 0
-        val tracked = track(raw)
-        if (tracked == null) {
-            publish(null, detection.clarity, rms)
-        } else {
-            publish(medianOfWindow(tracked), detection.clarity, rms)
-        }
-    }
-
-    private fun track(raw: Float): Float? {
-        val s = stableFreq
-        if (s == null) {
-            val c = candidateFreq
-            candidateCount = if (c != null && near(raw, c, TOLERANCE)) candidateCount + 1 else 1
-            candidateFreq = raw
-            return if (candidateCount >= LOCK_IN_FRAMES) {
-                stableFreq = raw
-                candidateFreq = null
-                candidateCount = 0
-                octaveRejectCount = 0
-                raw
-            } else null
-        }
-
-        return when {
-            near(raw, s, TOLERANCE) -> {
-                octaveRejectCount = 0
-                stableFreq = s + (raw - s) * EMA_WEIGHT
-                raw
-            }
-            near(raw, s * 2f, OCTAVE_TOL) || near(raw, s * 3f, OCTAVE_TOL) ||
-                near(raw, s / 2f, OCTAVE_TOL) || near(raw, s / 3f, OCTAVE_TOL) -> {
-                octaveRejectCount++
-                if (octaveRejectCount >= OCTAVE_ESCAPE_FRAMES) {
-                    stableFreq = raw
-                    octaveRejectCount = 0
-                    raw
-                } else {
-                    s
-                }
-            }
-            else -> {
-                val c = candidateFreq
-                candidateCount = if (c != null && near(raw, c, TOLERANCE)) candidateCount + 1 else 1
-                candidateFreq = raw
-                if (candidateCount >= RELOCK_FRAMES) {
-                    stableFreq = raw
-                    candidateFreq = null
-                    candidateCount = 0
-                    octaveRejectCount = 0
-                    raw
-                } else {
-                    s
-                }
+        var raw: Float? = null
+        var clarity = 0f
+        if (rms >= SILENCE_RMS_THRESHOLD) {
+            val detection = detector.detect(samples, 0, samples.size)
+            clarity = detection.clarity
+            if (detection.frequency != null && detection.clarity >= MIN_CLARITY) {
+                raw = detection.frequency
             }
         }
-    }
 
-    private fun medianOfWindow(newValue: Float): Float {
-        displayWindow.addLast(newValue)
-        while (displayWindow.size > 3) displayWindow.removeFirst()
-        val list = displayWindow.sorted()
-        return list[list.size / 2]
-    }
-
-    private fun near(a: Float, b: Float, tolerance: Float): Boolean =
-        abs(a - b) <= b * tolerance
-
-    private fun onUnusableFrame(rms: Float) {
-        silentRun++
-        if (silentRun >= SILENCE_RESET_FRAMES) {
-            stableFreq = null
-            candidateFreq = null
-            candidateCount = 0
-            octaveRejectCount = 0
-            displayWindow.clear()
-        }
-        publish(null, 0f, rms)
+        val tracked = tracker.feed(raw)
+        publish(tracked, if (raw != null) clarity else 0f, rms)
     }
 
     private fun publish(freq: Float?, clarity: Float, rms: Float) {
@@ -393,6 +360,7 @@ class PitchViewModel(
     override fun onCleared() {
         super.onCleared()
         stop()
+        importJob?.cancel()
         tonePlayer.stop()
     }
 }
