@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pitchmonitor.ui.LocalDimens
 import kotlin.math.ln
 
 /**
@@ -29,6 +30,7 @@ fun PitchHistoryGraph(
     history: List<Float?>,
     modifier: Modifier = Modifier,
 ) {
+    val d = LocalDimens.current
     val lineColor = MaterialTheme.colorScheme.primary
     val gridColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
     val labelColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
@@ -42,7 +44,7 @@ fun PitchHistoryGraph(
     Column(modifier = modifier) {
         Text(
             text = "音高历史",
-            fontSize = 14.sp,
+            fontSize = d.graphTitleFont.sp,
             fontWeight = FontWeight.Medium,
             color = labelColor,
             modifier = Modifier.padding(bottom = 4.dp),

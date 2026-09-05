@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.withFrameNanos
 import com.pitchmonitor.data.SessionStore
 import com.pitchmonitor.model.PitchSession
+import com.pitchmonitor.ui.LocalDimens
 import com.pitchmonitor.ui.components.CurveCanvas
 import com.pitchmonitor.util.Exporter
 import com.pitchmonitor.util.Fmt
@@ -41,6 +42,7 @@ fun PlaybackScreen(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
+    val d = LocalDimens.current
     var playheadMs by remember(session.id) { mutableStateOf(0L) }
     var isPlaying by remember(session.id) { mutableStateOf(false) }
 
@@ -144,7 +146,7 @@ fun PlaybackScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .statusBarsPadding()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                    .padding(horizontal = d.screenHPad / 2, vertical = 6.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onBack) {
@@ -187,11 +189,17 @@ fun PlaybackScreen(
             }
         },
     ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+            contentAlignment = Alignment.TopCenter,
+        ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp)
+                .then(d.contentMaxWidth?.let { Modifier.widthIn(max = it) } ?: Modifier.fillMaxWidth())
+                .padding(horizontal = d.screenHPad)
                 .navigationBarsPadding(),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -210,7 +218,7 @@ fun PlaybackScreen(
                     Spacer(Modifier.width(8.dp))
                     Text(
                         text = freq?.let { "%.1f".format(it) } ?: "—",
-                        fontSize = 44.sp,
+                        fontSize = d.playbackFreqFont.sp,
                         fontWeight = FontWeight.Light,
                         color = if (freq != null) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
@@ -220,7 +228,7 @@ fun PlaybackScreen(
                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
                         Text(
                             text = noteInfo?.let { "${it.name}${it.octave}" } ?: "无音高",
-                            fontSize = 26.sp,
+                            fontSize = d.playbackNoteFont.sp,
                             fontWeight = FontWeight.Bold,
                             color = if (noteInfo != null) MaterialTheme.colorScheme.secondary
                                     else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
@@ -293,6 +301,7 @@ fun PlaybackScreen(
                     modifier = Modifier.width(52.dp),
                 )
             }
+        }
         }
     }
 

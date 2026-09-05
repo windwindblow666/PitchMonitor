@@ -48,6 +48,7 @@ fun PitchMonitorScreen(
     onSavedGoSessions: () -> Unit,
 ) {
     val context = LocalContext.current
+    val d = LocalDimens.current
     val result by viewModel.result.collectAsState()
     val history by viewModel.history.collectAsState()
     val isRunning by viewModel.isRunning.collectAsState()
@@ -57,9 +58,7 @@ fun PitchMonitorScreen(
     val pending by viewModel.pendingRecording.collectAsState()
 
     var showThemeDialog by remember { mutableStateOf(false) }
-
-    var showNameDialog by remember { mutableStateOf(false) }
-    LaunchedEffect(pending) { showNameDialog = pending != null }
+    LaunchedEffect(pending) { showThemeDialog = pending != null }
 
     var hasPermission by remember {
         mutableStateOf(
@@ -78,12 +77,12 @@ fun PitchMonitorScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .statusBarsPadding()
-                    .padding(horizontal = 20.dp, vertical = 10.dp),
+                    .padding(horizontal = d.screenHPad, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     text = "实时音高监测器",
-                    fontSize = 20.sp,
+                    fontSize = d.titleFont.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f),
@@ -105,116 +104,128 @@ fun PitchMonitorScreen(
             }
         },
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp)
-                .navigationBarsPadding()
-                .imePadding(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(padding),
+            contentAlignment = Alignment.TopCenter,
         ) {
-            // ---- mode selector ----
-            ModeSelector(
-                mode = mode,
-                enabled = !isRunning,
-                onSelect = { viewModel.setMode(it) },
-            )
-
-            // ---- REC stopwatch (record mode) ----
-            if (isRunning && mode == MonitorMode.RECORD) {
-                RecBadge(elapsedMs = elapsedMs)
-            }
-
-            // ---- readout card ----
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surface,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(modifier = Modifier.padding(vertical = 14.dp)) {
-                    FrequencyReadout(result = result, modifier = Modifier.fillMaxWidth())
-                    Spacer(modifier = Modifier.height(2.dp))
-                    CentsMeter(result = result, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp))
-                }
-            }
-
-            // ---- live history ----
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surface,
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
+                    .fillMaxHeight()
+                    .then(d.contentMaxWidth?.let { Modifier.widthIn(max = it) } ?: Modifier.fillMaxWidth())
+                    .padding(horizontal = d.screenHPad)
+                    .navigationBarsPadding()
+                    .imePadding(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(d.spacing),
             ) {
-                PitchHistoryGraph(
-                    history = history,
+                // ---- mode selector ----
+                ModeSelector(
+                    mode = mode,
+                    enabled = !isRunning,
+                    onSelect = { viewModel.setMode(it) },
+                )
+
+                // ---- REC stopwatch (record mode) ----
+                if (isRunning && mode == MonitorMode.RECORD) {
+                    RecBadge(elapsedMs = elapsedMs)
+                }
+
+                // ---- readout card ----
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.padding(vertical = 14.dp)) {
+                        FrequencyReadout(result = result, modifier = Modifier.fillMaxWidth())
+                        Spacer(modifier = Modifier.height(2.dp))
+                        CentsMeter(
+                            result = result,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp),
+                        )
+                    }
+                }
+
+                // ---- live history (flexes to fill leftover height on any screen) ----
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(12.dp),
-                )
-            }
+                        .weight(1f),
+                ) {
+                    PitchHistoryGraph(
+                        history = history,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                    )
+                }
 
-            // ---- reference tone ----
-            OutlinedButton(
-                onClick = { viewModel.toggleReferenceTone() },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp),
-                shape = RoundedCornerShape(14.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.MusicNote,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = if (isTonePlaying) "停止标准音 A4 (440 Hz)" else "标准音 A4 (440 Hz)",
-                    fontSize = 14.sp,
-                )
-            }
+                // ---- reference tone ----
+                OutlinedButton(
+                    onClick = { viewModel.toggleReferenceTone() },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(d.toneButtonHeight),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.MusicNote,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (isTonePlaying) "停止标准音 A4 (440 Hz)" else "标准音 A4 (440 Hz)",
+                        fontSize = d.toneButtonFont.sp,
+                    )
+                }
 
-            // ---- start / stop ----
-            Button(
-                onClick = {
-                    if (!hasPermission) {
-                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    } else if (isRunning) {
-                        viewModel.stop()
-                    } else {
-                        viewModel.clearHistory()
-                        viewModel.start()
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(58.dp),
-                shape = RoundedCornerShape(18.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isRunning) MaterialTheme.colorScheme.error
-                                     else MaterialTheme.colorScheme.primary,
-                ),
-            ) {
-                Icon(
-                    imageVector = if (isRunning) Icons.Filled.MicOff else Icons.Filled.Mic,
-                    contentDescription = null,
-                    modifier = Modifier.size(26.dp),
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = when {
-                        !hasPermission -> "授权麦克风"
-                        isRunning && mode == MonitorMode.RECORD -> "结束并保存"
-                        isRunning -> "停止监测"
-                        else -> if (mode == MonitorMode.RECORD) "开始记录" else "开始监测"
+                // ---- start / stop ----
+                Button(
+                    onClick = {
+                        if (!hasPermission) {
+                            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        } else if (isRunning) {
+                            viewModel.stop()
+                        } else {
+                            viewModel.clearHistory()
+                            viewModel.start()
+                        }
                     },
-                    fontSize = 19.sp,
-                    fontWeight = FontWeight.Medium,
-                )
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(d.startButtonHeight),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isRunning) MaterialTheme.colorScheme.error
+                                         else MaterialTheme.colorScheme.primary,
+                    ),
+                ) {
+                    Icon(
+                        imageVector = if (isRunning) Icons.Filled.MicOff else Icons.Filled.Mic,
+                        contentDescription = null,
+                        modifier = Modifier.size(26.dp),
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = when {
+                            !hasPermission -> "授权麦克风"
+                            isRunning && mode == MonitorMode.RECORD -> "结束并保存"
+                            isRunning -> "停止监测"
+                            else -> if (mode == MonitorMode.RECORD) "开始记录" else "开始监测"
+                        },
+                        fontSize = d.startButtonFont.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
             }
-            Spacer(modifier = Modifier.height(10.dp))
         }
     }
 
@@ -251,7 +262,7 @@ fun PitchMonitorScreen(
     }
 
     // ---- naming dialog after a recording ----
-    if (showNameDialog && pending != null) {
+    if (pending != null) {
         var name by remember(pending) { mutableStateOf(pending!!.defaultName()) }
         AlertDialog(
             onDismissRequest = { },
@@ -277,14 +288,12 @@ fun PitchMonitorScreen(
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.savePending(name)
-                    showNameDialog = false
                     onSavedGoSessions()
                 }) { Text("保存", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
                 TextButton(onClick = {
                     viewModel.discardPending()
-                    showNameDialog = false
                 }) { Text("放弃", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)) }
             },
         )
@@ -351,6 +360,7 @@ private fun RowScope.ModePill(
 
 @Composable
 private fun RecBadge(elapsedMs: Long) {
+    val d = LocalDimens.current
     val alpha = rememberInfiniteTransition(label = "rec")
         .animateFloat(0.35f, 1f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "dot")
     Surface(
@@ -369,7 +379,7 @@ private fun RecBadge(elapsedMs: Long) {
             Spacer(Modifier.width(10.dp))
             Text(
                 "REC  ${Fmt.clock(elapsedMs)}",
-                fontSize = 17.sp,
+                fontSize = d.recFont.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.error,
                 textAlign = TextAlign.Center,

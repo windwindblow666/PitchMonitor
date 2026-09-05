@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pitchmonitor.model.PitchSession
+import com.pitchmonitor.ui.LocalDimens
 import com.pitchmonitor.ui.components.CurveCanvas
 import com.pitchmonitor.util.Fmt
 import java.text.SimpleDateFormat
@@ -41,6 +42,7 @@ fun SessionsScreen(
     onDelete: (Long) -> Unit,
     onRename: (Long, String) -> Unit,
 ) {
+    val d = LocalDimens.current
     var confirmDelete by remember { mutableStateOf<PitchSession?>(null) }
     var renameTarget by remember { mutableStateOf<PitchSession?>(null) }
 
@@ -91,8 +93,9 @@ fun SessionsScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                contentPadding = PaddingValues(horizontal = d.screenHPad, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 items(sessions, key = { it.id }) { s ->
                     SessionCard(
@@ -100,6 +103,7 @@ fun SessionsScreen(
                         onClick = { onOpen(s.id) },
                         onRename = { renameTarget = s },
                         onDelete = { confirmDelete = s },
+                        modifier = d.contentMaxWidth?.let { Modifier.widthIn(max = it) } ?: Modifier,
                     )
                 }
             }
@@ -163,14 +167,16 @@ private fun SessionCard(
     onClick: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
+    val d = LocalDimens.current
     val dateStr = remember(session.createdAt) {
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(session.createdAt))
     }
     Surface(
         shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surface,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clickable { onClick() },
     ) {
@@ -188,7 +194,7 @@ private fun SessionCard(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     session.name,
-                    fontSize = 15.sp,
+                    fontSize = d.cardTitleFont.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
@@ -197,7 +203,7 @@ private fun SessionCard(
                 Spacer(Modifier.height(2.dp))
                 Text(
                     "$dateStr · ${Fmt.duration(session.durationMs)}",
-                    fontSize = 12.sp,
+                    fontSize = d.cardMetaFont.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
                 )
                 Spacer(Modifier.height(6.dp))

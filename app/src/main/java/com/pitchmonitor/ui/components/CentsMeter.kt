@@ -13,6 +13,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pitchmonitor.model.PitchResult
+import com.pitchmonitor.ui.LocalDimens
 import kotlin.math.abs
 
 /**
@@ -24,6 +25,7 @@ fun CentsMeter(
     result: PitchResult,
     modifier: Modifier = Modifier,
 ) {
+    val d = LocalDimens.current
     val cents = result.cents
     val hasPitch = cents != null
     val centsValue = cents ?: 0f
@@ -44,7 +46,7 @@ fun CentsMeter(
             Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(70.dp),
+                    .height(d.meterCanvasHeight),
             ) {
                 val w = size.width
                 val h = size.height
@@ -115,7 +117,7 @@ fun CentsMeter(
                 listOf(-50, -25, 0, 25, 50).forEach { label ->
                     Text(
                         text = "$label",
-                        fontSize = 11.sp,
+                        fontSize = (d.meterTextFont.sp.value * 0.55f).sp,
                         color = tickColor,
                     )
                 }
@@ -130,7 +132,7 @@ fun CentsMeter(
                 val sign = if (centsValue > 0) "+" else ""
                 "$sign${centsValue.toInt()}¢"
             } else "—",
-            fontSize = 20.sp,
+            fontSize = d.meterTextFont.sp,
             fontWeight = FontWeight.Medium,
             color = needleColor,
         )
