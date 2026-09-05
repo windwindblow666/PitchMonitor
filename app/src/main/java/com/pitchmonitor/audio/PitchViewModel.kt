@@ -1,12 +1,17 @@
 package com.pitchmonitor.audio
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.pitchmonitor.data.SessionStore
 import com.pitchmonitor.model.PitchResult
+import com.pitchmonitor.model.PitchSession
+import com.pitchmonitor.util.Fmt
 import com.pitchmonitor.util.NoteUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -14,21 +19,31 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.sqrt
 
+enum class MonitorMode { LIVE, RECORD }
+
+/** A just-finished recording waiting for the user to name & save (or discard). */
+data class PendingRecording(
+    val createdAt: Long,
+    val durationMs: Long,
+    val timesMs: List<Long>,
+    val freqs: List<Float?>,
+) {
+    fun defaultName(): String = Fmt.defaultSessionName(createdAt, durationMs)
+}
+
 /**
  * Owns the audio pipeline and exposes observable UI state.
  *
- * Raw per-frame MPM detections are jittery (occasional octave jumps, noise
- * blips), so results pass through a tracker before reaching the UI:
- *
+ * Raw per-frame MPM detections are jittery, so results pass through a tracker:
  *  1. Gates — silence (rms) and clarity thresholds reject noise frames.
- *  2. Lock-in — a new pitch must repeat consistently for [LOCK_IN_FRAMES]
- *     frames before it becomes the tracked pitch (kills onset garbage).
- *  3. Continuity — detections within [TOLERANCE] of the tracked pitch are
- *     EMA-smoothed; detections near a ×2/×3/÷2/÷3 multiple are treated as
- *     octave errors and held (persistent flips trigger a re-lock).
- *  4. Re-pitch — a genuinely different pitch must repeat for [RELOCK_FRAMES]
- *     frames before the tracker jumps to it.
- *  5. Display median — last 3 tracked values, median shown (kills residue).
+ *  2. Lock-in — a new pitch must repeat consistently before it is tracked.
+ *  3. Continuity — near detections are EMA-smoothed; ×2/×3/÷2/÷3 jumps are
+ *     octave errors and get held (persistent flips trigger a re-lock).
+ *  4. Re-pitch — a genuinely different pitch must repeat before jumping.
+ *  5. Display median — last 3 tracked values, median shown.
+ *
+ * Modes: LIVE monitors without persisting; RECORD additionally stores the
+ * (timestamp, frequency) stream and offers it for naming/saving on stop.
  */
 class PitchViewModel(
     app: Application,
@@ -42,12 +57,12 @@ class PitchViewModel(
         private const val SILENCE_RMS_THRESHOLD = 0.0025f
         private const val MIN_CLARITY = 0.65f
 
-        private const val LOCK_IN_FRAMES = 3        // frames to acquire a first pitch
-        private const val RELOCK_FRAMES = 4         // frames to jump to a new pitch
-        private const val OCTAVE_ESCAPE_FRAMES = 10 // persistent octave flip → re-lock
-        private const val SILENCE_RESET_FRAMES = 15 // ~0.7 s silence → full reset
-        private const val TOLERANCE = 0.07f         // ±7 % = same pitch
-        private const val OCTAVE_TOL = 0.05f        // ±5 % = octave-error candidate
+        private const val LOCK_IN_FRAMES = 3
+        private const val RELOCK_FRAMES = 4
+        private const val OCTAVE_ESCAPE_FRAMES = 10
+        private const val SILENCE_RESET_FRAMES = 15
+        private const val TOLERANCE = 0.07f
+        private const val OCTAVE_TOL = 0.05f
         private const val EMA_WEIGHT = 0.15f
     }
 
@@ -55,6 +70,23 @@ class PitchViewModel(
     private val detector = PitchDetector(SAMPLE_RATE)
     private val tonePlayer = ReferenceTonePlayer(SAMPLE_RATE)
 
+    // ---------- mode / recording ----------
+    private val _mode = MutableStateFlow(MonitorMode.LIVE)
+    val mode: StateFlow<MonitorMode> = _mode.asStateFlow()
+
+    private val _elapsedMs = MutableStateFlow(0L)
+    val elapsedMs: StateFlow<Long> = _elapsedMs.asStateFlow()
+
+    private val _pendingRecording = MutableStateFlow<PendingRecording?>(null)
+    val pendingRecording: StateFlow<PendingRecording?> = _pendingRecording.asStateFlow()
+
+    private var tickerJob: Job? = null
+    private var recordStartElapsed = 0L
+    private var recordCreatedAt = 0L
+    private val recTimes = ArrayList<Long>()
+    private val recFreqs = ArrayList<Float?>()
+
+    // ---------- live state ----------
     private val _result = MutableStateFlow(PitchResult(null, null, null, null, 0f, 0f))
     val result: StateFlow<PitchResult> = _result.asStateFlow()
 
@@ -79,9 +111,29 @@ class PitchViewModel(
 
     private var captureJob: Job? = null
 
+    // ---------- mode ----------
+    fun setMode(m: MonitorMode) {
+        if (_isRunning.value) return
+        _mode.value = m
+    }
+
+    // ---------- recording lifecycle ----------
     fun start() {
         if (_isRunning.value) return
         _isRunning.value = true
+        if (_mode.value == MonitorMode.RECORD) {
+            recTimes.clear()
+            recFreqs.clear()
+            recordStartElapsed = SystemClock.elapsedRealtime()
+            recordCreatedAt = System.currentTimeMillis()
+            _elapsedMs.value = 0L
+            tickerJob = viewModelScope.launch {
+                while (true) {
+                    _elapsedMs.value = SystemClock.elapsedRealtime() - recordStartElapsed
+                    delay(100)
+                }
+            }
+        }
         captureJob = viewModelScope.launch(Dispatchers.Default) {
             capture.frames().collect { frame ->
                 processFrame(frame)
@@ -90,17 +142,55 @@ class PitchViewModel(
     }
 
     fun stop() {
+        if (!_isRunning.value) return
         _isRunning.value = false
         captureJob?.cancel()
         captureJob = null
+        tickerJob?.cancel()
+        tickerJob = null
+        if (_mode.value == MonitorMode.RECORD && recTimes.isNotEmpty()) {
+            _pendingRecording.value = PendingRecording(
+                createdAt = recordCreatedAt,
+                durationMs = recTimes.last(),
+                timesMs = recTimes.toList(),
+                freqs = recFreqs.toList(),
+            )
+        }
     }
 
-    fun clearHistory() {
-        historyBuffer.clear()
-        _history.value = emptyList()
+    fun savePending(name: String?) {
+        val p = _pendingRecording.value ?: return
+        val session = PitchSession(
+            id = p.createdAt,
+            name = name?.takeIf { it.isNotBlank() } ?: p.defaultName(),
+            createdAt = p.createdAt,
+            durationMs = p.durationMs,
+            timesMs = p.timesMs,
+            freqs = p.freqs,
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            SessionStore.save(getApplication(), session)
+        }
+        _pendingRecording.value = null
+        recTimes.clear()
+        recFreqs.clear()
     }
 
-    /** Toggle the 440 Hz reference tone (A4). */
+    fun discardPending() {
+        _pendingRecording.value = null
+        recTimes.clear()
+        recFreqs.clear()
+    }
+
+    fun deleteSession(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            SessionStore.delete(getApplication(), id)
+        }
+    }
+
+    fun loadSession(id: Long): PitchSession? = SessionStore.load(getApplication(), id)
+
+    // ---------- reference tone ----------
     fun toggleReferenceTone() {
         if (tonePlayer.isPlaying) {
             tonePlayer.stop()
@@ -111,8 +201,13 @@ class PitchViewModel(
         }
     }
 
+    fun clearHistory() {
+        historyBuffer.clear()
+        _history.value = emptyList()
+    }
+
+    // ---------- audio processing ----------
     private fun processFrame(frame: ShortArray) {
-        // Convert 16-bit PCM to float [-1, 1] and measure loudness
         val samples = FloatArray(frame.size)
         var rmsSum = 0f
         for (i in frame.indices) {
@@ -134,23 +229,15 @@ class PitchViewModel(
             return
         }
 
-        // Signal is usable
         silentRun = 0
         val tracked = track(raw)
-
         if (tracked == null) {
-            // Still acquiring lock-in — show no pitch for these few frames
             publish(null, detection.clarity, rms)
         } else {
             publish(medianOfWindow(tracked), detection.clarity, rms)
         }
     }
 
-    /**
-     * Temporal pitch tracking: octave-error rejection, EMA smoothing,
-     * lock-in / re-lock hysteresis. Returns the tracked frequency to display
-     * this frame, or null while still acquiring.
-     */
     private fun track(raw: Float): Float? {
         val s = stableFreq
         if (s == null) {
@@ -169,24 +256,21 @@ class PitchViewModel(
         return when {
             near(raw, s, TOLERANCE) -> {
                 octaveRejectCount = 0
-                val smoothed = s + (raw - s) * EMA_WEIGHT
-                stableFreq = smoothed
+                stableFreq = s + (raw - s) * EMA_WEIGHT
                 raw
             }
             near(raw, s * 2f, OCTAVE_TOL) || near(raw, s * 3f, OCTAVE_TOL) ||
                 near(raw, s / 2f, OCTAVE_TOL) || near(raw, s / 3f, OCTAVE_TOL) -> {
                 octaveRejectCount++
                 if (octaveRejectCount >= OCTAVE_ESCAPE_FRAMES) {
-                    // The lock itself is probably wrong — adopt the flipped value
                     stableFreq = raw
                     octaveRejectCount = 0
                     raw
                 } else {
-                    s  // hold the tracked pitch
+                    s
                 }
             }
             else -> {
-                // A different pitch — only jump after it proves consistent
                 val c = candidateFreq
                 candidateCount = if (c != null && near(raw, c, TOLERANCE)) candidateCount + 1 else 1
                 candidateFreq = raw
@@ -197,7 +281,7 @@ class PitchViewModel(
                     octaveRejectCount = 0
                     raw
                 } else {
-                    s  // hold
+                    s
                 }
             }
         }
@@ -213,7 +297,6 @@ class PitchViewModel(
     private fun near(a: Float, b: Float, tolerance: Float): Boolean =
         abs(a - b) <= b * tolerance
 
-    /** Silence / noise frame: age out the tracker, report no pitch. */
     private fun onUnusableFrame(rms: Float) {
         silentRun++
         if (silentRun >= SILENCE_RESET_FRAMES) {
@@ -234,6 +317,10 @@ class PitchViewModel(
         } else {
             _result.value = PitchResult(null, null, null, null, clarity, rms)
             pushHistory(null)
+        }
+        if (_mode.value == MonitorMode.RECORD && _isRunning.value) {
+            recTimes.add(SystemClock.elapsedRealtime() - recordStartElapsed)
+            recFreqs.add(freq)
         }
     }
 

@@ -1,32 +1,30 @@
 package com.pitchmonitor.ui
 
-import android.app.Activity
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFF4FC3F7),
-    onPrimary = Color.Black,
-    secondary = Color(0xFF81C784),
-    background = Color(0xFF0D1117),
-    surface = Color(0xFF161B22),
-    onBackground = Color(0xFFE6EDF3),
-    onSurface = Color(0xFFE6EDF3),
+    primary = Color(0xFF5CC8F8),
+    onPrimary = Color(0xFF06283A),
+    secondary = Color(0xFF8FE3A5),
+    onSecondary = Color(0xFF0A2A14),
+    error = Color(0xFFFF6B6B),
+    background = Color(0xFF0B0E14),
+    onBackground = Color(0xFFE8EDF4),
+    surface = Color(0xFF141922),
+    onSurface = Color(0xFFE8EDF4),
+    surfaceVariant = Color(0xFF1D2430),
+    onSurfaceVariant = Color(0xFFA9B4C2),
+    outline = Color(0xFF39424F),
 )
 
+/** Dark-only theme — a monitoring app reads best on dark. */
 @Composable
 fun PitchMonitorTheme(
     content: @Composable () -> Unit,
 ) {
-    // Force dark theme — this is a monitoring app, dark is better for real-time reading.
     MaterialTheme(
         colorScheme = DarkColors,
         content = content,
