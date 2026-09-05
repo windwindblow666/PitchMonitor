@@ -1,0 +1,20 @@
+# Build outputs
+.gradle/
+build/
+app/build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+captures/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keep: gradle wrapper, sources, apk/ (versioned APK backups)
+
+# APK backups go to GitHub Releases, not git
+apk/
+音高监测器.apk
