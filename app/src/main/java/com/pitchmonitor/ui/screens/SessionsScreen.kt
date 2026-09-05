@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -29,7 +30,8 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * List of saved recordings. Tap a card to open playback; trash icon deletes.
+ * List of saved recordings. Tap a card to open playback; pencil renames;
+ * trash icon deletes.
  */
 @Composable
 fun SessionsScreen(
@@ -37,8 +39,10 @@ fun SessionsScreen(
     onBack: () -> Unit,
     onOpen: (Long) -> Unit,
     onDelete: (Long) -> Unit,
+    onRename: (Long, String) -> Unit,
 ) {
     var confirmDelete by remember { mutableStateOf<PitchSession?>(null) }
+    var renameTarget by remember { mutableStateOf<PitchSession?>(null) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -94,11 +98,42 @@ fun SessionsScreen(
                     SessionCard(
                         session = s,
                         onClick = { onOpen(s.id) },
+                        onRename = { renameTarget = s },
                         onDelete = { confirmDelete = s },
                     )
                 }
             }
         }
+    }
+
+    if (renameTarget != null) {
+        var newName by remember(renameTarget) { mutableStateOf(renameTarget!!.name) }
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("重命名", fontWeight = FontWeight.Bold) },
+            text = {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    singleLine = true,
+                    label = { Text("录音名称") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val n = newName.trim()
+                    if (n.isNotEmpty()) onRename(renameTarget!!.id, n)
+                    renameTarget = null
+                }) { Text("保存", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) {
+                    Text("取消", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                }
+            },
+        )
     }
 
     if (confirmDelete != null) {
@@ -126,6 +161,7 @@ fun SessionsScreen(
 private fun SessionCard(
     session: PitchSession,
     onClick: () -> Unit,
+    onRename: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val dateStr = remember(session.createdAt) {
@@ -172,6 +208,13 @@ private fun SessionCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(40.dp),
+                )
+            }
+            IconButton(onClick = onRename) {
+                Icon(
+                    Icons.Filled.Edit,
+                    contentDescription = "重命名",
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
                 )
             }
             IconButton(onClick = onDelete) {

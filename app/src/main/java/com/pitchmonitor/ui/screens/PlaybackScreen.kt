@@ -8,6 +8,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -20,8 +21,11 @@ import androidx.compose.runtime.withFrameNanos
 import com.pitchmonitor.data.SessionStore
 import com.pitchmonitor.model.PitchSession
 import com.pitchmonitor.ui.components.CurveCanvas
+import com.pitchmonitor.util.Exporter
 import com.pitchmonitor.util.Fmt
 import com.pitchmonitor.util.NoteUtil
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -90,13 +94,15 @@ fun PlaybackScreen(
 
     fun togglePlay() {
         if (isPlaying) {
-            player?.pause()
+            runCatching { player?.pause() }
             isPlaying = false
         } else {
             if (playheadMs >= session.durationMs) seekTo(0L)
             player?.let {
-                it.seekTo(playheadMs.toInt())
-                it.start()
+                runCatching {
+                    it.seekTo(playheadMs.toInt())
+                    it.start()
+                }
             }
             isPlaying = true
         }
@@ -106,6 +112,30 @@ fun PlaybackScreen(
     val idx = remember(playheadMs) { lowerBound(session.timesMs, playheadMs) }
     val freq = session.freqs.getOrElse(idx) { null }
     val noteInfo = freq?.let { NoteUtil.freqToNote(it) }
+
+    // ---- export ----
+    val scope = rememberCoroutineScope()
+    var showExportChooser by remember { mutableStateOf(false) }
+    var exported by remember { mutableStateOf<Triple<String, String, android.net.Uri>?>(null) } // name, mime, uri
+    var exportError by remember { mutableStateOf<String?>(null) }
+
+    fun doExport(kind: String) {
+        showExportChooser = false
+        scope.launch(Dispatchers.IO) {
+            try {
+                val result = if (kind == "wav") {
+                    val f = SessionStore.audioFile(context, session.id)!!
+                    Exporter.exportAudio(context, session, f.readBytes())
+                } else {
+                    Exporter.exportCsv(context, session)
+                }
+                val mime = if (kind == "wav") "audio/wav" else "text/csv"
+                exported = Triple(result.displayName, mime, result.uri)
+            } catch (e: Exception) {
+                exportError = e.message ?: "导出失败"
+            }
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -143,7 +173,14 @@ fun PlaybackScreen(
                             Icons.AutoMirrored.Filled.VolumeUp,
                             contentDescription = "含录音",
                             tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(end = 12.dp),
+                            modifier = Modifier.padding(end = 4.dp),
+                        )
+                    }
+                    IconButton(onClick = { showExportChooser = true }) {
+                        Icon(
+                            Icons.Filled.Share,
+                            contentDescription = "导出",
+                            tint = MaterialTheme.colorScheme.primary,
                         )
                     }
                 }
@@ -257,6 +294,81 @@ fun PlaybackScreen(
                 )
             }
         }
+    }
+
+    // export chooser
+    if (showExportChooser) {
+        AlertDialog(
+            onDismissRequest = { showExportChooser = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("导出录音", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    TextButton(
+                        onClick = { doExport("wav") },
+                        enabled = player != null,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            if (player != null) "🎵 录音文件（WAV）" else "🎵 无录音文件（本条无音频）",
+                            color = if (player != null) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                        )
+                    }
+                    TextButton(
+                        onClick = { doExport("csv") },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("📊 音高数据（CSV）", color = MaterialTheme.colorScheme.primary)
+                    }
+                    Text(
+                        "保存到设备的「下载」目录",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showExportChooser = false }) { Text("取消") }
+            },
+        )
+    }
+
+    // export success → offer share
+    exported?.let { (name, mime, shareUri) ->
+        AlertDialog(
+            onDismissRequest = { exported = null },
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("导出成功", fontWeight = FontWeight.Bold) },
+            text = { Text("已保存到「下载」目录：\n$name") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                        type = mime
+                        putExtra(android.content.Intent.EXTRA_STREAM, shareUri)
+                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(android.content.Intent.createChooser(intent, "分享"))
+                    exported = null
+                }) { Text("分享", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { exported = null }) { Text("完成") }
+            },
+        )
+    }
+
+    // export failure
+    exportError?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { exportError = null },
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("导出失败", fontWeight = FontWeight.Bold) },
+            text = { Text(msg) },
+            confirmButton = {
+                TextButton(onClick = { exportError = null }) { Text("确定") }
+            },
+        )
     }
 }
 

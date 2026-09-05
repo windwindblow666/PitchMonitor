@@ -13,7 +13,7 @@ import kotlinx.coroutines.channels.awaitClose
 /**
  * Wraps [AudioRecord] into a cold [Flow] that emits fixed-size mono PCM-16 frames.
  *
- * Each emitted [ShortArray] has exactly [frameSize] samples (16-bit signed).
+ * Each emitted [ShortArray] contains exactly the samples read (16-bit signed).
  * The flow runs on the calling coroutine's dispatcher; AudioRecord.read is a
  * blocking call, so collect on a background dispatcher.
  *
@@ -29,7 +29,8 @@ class AudioCapture(
     @SuppressLint("MissingPermission")
     fun frames(): Flow<ShortArray> = callbackFlow {
         val minBuf = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-        val bufferSize = maxOf(minBuf * 2, frameSize * 4)
+        // generous slack: keeps recording gapless through short processing spikes
+        val bufferSize = maxOf(minBuf * 2, frameSize * 8)
 
         val recorder = try {
             AudioRecord(
@@ -60,7 +61,8 @@ class AudioCapture(
             while (!isClosedForSend) {
                 val read = recorder.read(frame, 0, frameSize)
                 if (read > 0) {
-                    trySend(frame.copyOf())
+                    // emit exactly the samples read — never stale tail data
+                    trySend(frame.copyOf(read))
                 } else if (read < 0) {
                     Log.e("AudioCapture", "read error: $read")
                     break

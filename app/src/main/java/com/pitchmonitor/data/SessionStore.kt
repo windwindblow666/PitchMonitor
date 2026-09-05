@@ -52,6 +52,13 @@ object SessionStore {
     fun audioFile(ctx: Context, id: Long): File? =
         File(dir(ctx), "$id.wav").takeIf { it.exists() }
 
+    /** Renames a session (JSON metadata only — the audio file is keyed by id). */
+    fun rename(ctx: Context, id: Long, newName: String): Boolean {
+        val s = load(ctx, id) ?: return false
+        save(ctx, s.copy(name = newName))
+        return true
+    }
+
     private fun parse(f: File): PitchSession? = try {
         val o = JSONObject(f.readText())
         val tArr = o.getJSONArray("t")

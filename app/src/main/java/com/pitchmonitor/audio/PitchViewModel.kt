@@ -11,6 +11,8 @@ import com.pitchmonitor.util.Fmt
 import com.pitchmonitor.util.NoteUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,6 +21,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.sqrt
 
@@ -116,6 +119,15 @@ class PitchViewModel(
 
     private var captureJob: Job? = null
 
+    /**
+     * Recording-generation guard. Bumped on every stop(); a collector whose
+     * generation is stale no-ops instead of racing the next recording (the
+     * v0.3 crash + audio-corruption source: stop() gave up waiting on a stuck
+     * collector, the next start() spawned a second one, and both wrote the
+     * tracker state and WAV concurrently).
+     */
+    private val gen = AtomicInteger(0)
+
     // ---------- mode ----------
     fun setMode(m: MonitorMode) {
         if (_isRunning.value) return
@@ -126,6 +138,7 @@ class PitchViewModel(
     fun start() {
         if (_isRunning.value) return
         _isRunning.value = true
+        val myGen = gen.incrementAndGet()
         if (_mode.value == MonitorMode.RECORD) {
             recTimes.clear()
             recFreqs.clear()
@@ -141,9 +154,26 @@ class PitchViewModel(
             }
         }
         captureJob = viewModelScope.launch(Dispatchers.Default) {
-            capture.frames().collect { frame ->
-                wav?.write(frame)
-                processFrame(frame)
+            val myWav = wav  // local snapshot: an orphaned collector must never touch the next recording's file
+            // Pitch detection runs on its own consumer so a slow detection
+            // frame can never stall the audio read loop — WAV writes stay
+            // gapless and pitch frames, if anything, lag/drop instead.
+            val pitchFrames = Channel<ShortArray>(64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+            val pitchJob = launch(Dispatchers.Default) {
+                for (frame in pitchFrames) {
+                    if (myGen != gen.get()) break
+                    processFrame(frame)
+                }
+            }
+            try {
+                capture.frames().collect { frame ->
+                    if (myGen != gen.get()) return@collect
+                    myWav?.write(frame)
+                    pitchFrames.trySend(frame)
+                }
+            } finally {
+                pitchFrames.close()
+                runCatching { pitchJob.join() }
             }
         }
     }
@@ -151,9 +181,10 @@ class PitchViewModel(
     fun stop() {
         if (!_isRunning.value) return
         _isRunning.value = false
-        // wait for the collector to exit its current blocking read before
-        // touching the WAV file (read returns within one frame, ~47 ms)
-        captureJob?.let { job -> runBlocking { runCatching { withTimeout(500) { job.join() } } } }
+        // Invalidate any straggler collector FIRST: after this an orphaned
+        // collector no-ops instead of racing the next recording.
+        gen.incrementAndGet()
+        captureJob?.let { job -> runBlocking { runCatching { withTimeout(2000) { job.join() } } } }
         captureJob = null
         tickerJob?.cancel()
         tickerJob = null
@@ -167,7 +198,7 @@ class PitchViewModel(
                     durationMs = recTimes.last(),
                     timesMs = recTimes.toList(),
                     freqs = recFreqs.toList(),
-                    audioFile = recorder?.let { File(audioFile(recordCreatedAt).absolutePath).takeIf { f -> f.exists() } },
+                    audioFile = recorder?.let { audioFile(recordCreatedAt).takeIf { f -> f.exists() } },
                 )
             } else {
                 recorder?.abort()
@@ -208,6 +239,12 @@ class PitchViewModel(
     fun deleteSession(id: Long) {
         viewModelScope.launch(Dispatchers.IO) {
             SessionStore.delete(getApplication(), id)
+        }
+    }
+
+    fun renameSession(id: Long, newName: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            SessionStore.rename(getApplication(), id, newName)
         }
     }
 

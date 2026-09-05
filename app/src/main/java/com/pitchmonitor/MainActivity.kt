@@ -101,6 +101,12 @@ private fun App() {
                                 viewModel.deleteSession(id)
                                 sessions.value = sessions.value.filterNot { it.id == id }
                             },
+                            onRename = { id, name ->
+                                viewModel.renameSession(id, name)
+                                sessions.value = sessions.value.map {
+                                    if (it.id == id) it.copy(name = name) else it
+                                }
+                            },
                         )
                     }
                     is Screen.Playback -> {
